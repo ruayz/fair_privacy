@@ -32,7 +32,7 @@ def main():
     parser.add_argument(
         "--cf",
         type=str,
-        default="configs/cifar10.yaml",
+        default="configs/compas.yaml",
         help="Path to the configuration YAML file.",
     )
     args = parser.parse_args()

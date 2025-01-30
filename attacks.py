@@ -38,6 +38,32 @@ def get_rmia_out_signals(
     return out_signals
 
 
+def get_rmia_out_and_in_signals(
+    all_signals: np.ndarray,
+    all_memberships: np.ndarray,
+    target_model_idx: int,
+    num_reference_models: int,
+) -> np.ndarray:
+    paired_model_idx = (
+        target_model_idx + 1 if target_model_idx % 2 == 0 else target_model_idx - 1
+    )
+    # Add non-target and non-paired model indices
+    columns = [
+        i
+        for i in range(all_signals.shape[1])
+        if i != target_model_idx and i != paired_model_idx
+    ][: 2 * num_reference_models]
+    selected_signals = all_signals[:, columns]
+    non_members = ~all_memberships[:, columns]
+    out_signals = selected_signals * non_members
+    out_signals = -np.sort(-out_signals, axis=1)[:, :num_reference_models]
+
+    members = all_memberships[:, columns]
+    in_signals = selected_signals * members
+    in_signals = -np.sort(-in_signals, axis=1)[:, :num_reference_models]
+    return out_signals, in_signals
+
+
 def tune_offline_a(
     target_model_idx: int,
     all_signals: np.ndarray,
@@ -102,6 +128,47 @@ def run_rmia(
     )
     mean_out_x = np.mean(out_signals, axis=1)
     mean_x = (1 + offline_a) / 2 * mean_out_x + (1 - offline_a) / 2
+
+    mean_x = np.clip(mean_x, 1e-10, None)  
+    prob_ratio_x = target_signals.ravel() / mean_x
+
+    return prob_ratio_x
+
+
+def run_record_rmia(
+    target_model_idx: int,
+    all_signals: np.ndarray,
+    all_memberships: np.ndarray,
+    num_reference_models: int,
+    offline_a: float,
+) -> np.ndarray:
+    """
+    Attack a target model using the RMIA attack with the help of offline reference models.
+
+    Args:
+        target_model_idx (int): Index of the target model.
+        all_signals (np.ndarray): Softmax value of all samples in the target model.
+        all_memberships (np.ndarray): Membership matrix for all models.
+        num_reference_models (int): Number of reference models used for the attack.
+        offline_a (float): Coefficient offline_a is used to approximate p(x) using P_out in the offline setting.
+
+    Returns:
+        np.ndarray: MIA score for all samples (a larger score indicates higher chance of being member).
+    """
+    target_signals = all_signals[:, target_model_idx]
+    # out_signals, in_signals = get_rmia_out_and_in_signals(
+    #     all_signals, all_memberships, target_model_idx, num_reference_models
+    # )
+    out_signals = get_rmia_out_signals(
+        all_signals, all_memberships, target_model_idx, num_reference_models
+    )
+    mean_out_x = np.mean(out_signals, axis=1) # avg of each row
+    # mean_in_x = np.mean(in_signals, axis=1)
+    # mean_x = (mean_out_x + mean_in_x) / 2
+    mean_x = mean_out_x
+    #mean_x = (1 + offline_a) / 2 * mean_out_x + (1 - offline_a) / 2
+
+    mean_x = np.clip(mean_x, 1e-10, None)  
     prob_ratio_x = target_signals.ravel() / mean_x
 
     return prob_ratio_x

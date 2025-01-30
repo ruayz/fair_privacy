@@ -8,6 +8,7 @@ from tqdm import tqdm
 from transformers import PreTrainedModel, AutoTokenizer
 
 from dataset.utils import load_dataset_subsets
+from models.utils import get_model
 
 
 def get_softmax(
@@ -162,6 +163,7 @@ def get_model_signals(models_list, dataset, configs, logger):
 
     batch_size = configs["audit"]["batch_size"]  # Batch size used for inferring signals
     model_name = configs["train"]["model_name"]  # Algorithm used for training models
+    dataset_name = configs["data"]["dataset"]
     device = configs["audit"]["device"]  # GPU device used for inferring signals
     if "tokenizer" in configs["data"].keys():
         tokenizer = AutoTokenizer.from_pretrained(
@@ -180,6 +182,9 @@ def get_model_signals(models_list, dataset, configs, logger):
 
     signals = []
     for model in models_list:
+        # model_type = get_model(model_name, dataset_name)
+        # model = model_type.load_state_dict(model_dict)
+
         if configs["audit"]["algorithm"] == "RMIA":
             signals.append(
                 get_softmax(

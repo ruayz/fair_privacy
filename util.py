@@ -8,7 +8,7 @@ from typing import Dict, Any
 import numpy as np
 import torch
 
-from dataset import get_dataset
+from dataset import get_dataset, get_subset_dataset
 
 
 def check_configs(configs: Dict[str, Any]) -> None:
@@ -103,9 +103,34 @@ def load_dataset(configs: Dict[str, Any], data_dir: str, logger: logging.Logger)
     """
     if not configs['data'].get("tokenize", False):
         return get_dataset(configs['data']['dataset'], data_dir, logger)
+
     return get_dataset(
         configs['data']['dataset'],
         data_dir,
         logger,
         tokenizer=configs['data']['tokenizer'],
     )
+
+
+def load_subset_dataset(configs, dataset, data_dir, logger):
+    return get_subset_dataset(
+        configs['data']['dataset'],
+        configs['train']['data_size'],
+        data_dir,
+        dataset,
+        logger,
+    )
+
+def get_samples_acc(sample_idx, all_acc, save=False, path=None):
+    acc = []
+    for _, row in sample_idx.iterrows():
+        group = row["group"]
+        idx = row["idx"]
+        for tuple in all_acc[group]:
+            if tuple[0] == idx:
+                acc.append(tuple[1])
+
+    sample_idx["acc"] = acc
+    if save:
+        sample_idx.to_csv(path, index=False)
+    return sample_idx

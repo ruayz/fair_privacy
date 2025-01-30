@@ -9,6 +9,9 @@ import torch
 from torch import nn
 from torch.optim import lr_scheduler
 
+from opacus import PrivacyEngine
+from opacus.validators import ModuleValidator
+
 
 def lr_update(step: int, total_epoch: int, train_size: int, initial_lr: float) -> float:
     """
@@ -56,12 +59,31 @@ def train(
     optimizer = get_optimizer(model, configs)
 
     epochs = configs.get("epochs", 1)
-    scheduler = lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda step: lr_update(
-            step * 256, epochs, len(train_loader) * 256, 0.1
-        ),
-    )
+    # scheduler = lr_scheduler.LambdaLR(
+    #     optimizer,
+    #     lr_lambda=lambda step: lr_update(
+    #         step * 256, epochs, len(train_loader) * 256, 0.1
+    #     ),
+    # )
+
+    epsilon = configs.get("epsilon", 0)
+    if epsilon > 0:
+        privacy_engine = PrivacyEngine(accountant="rdp")
+        errors = ModuleValidator.validate(model, strict=False)
+        if len(errors) > 0 :
+            model = ModuleValidator.fix(model)
+            optimizer = get_optimizer(model, configs)
+        model, optimizer, train_loader = privacy_engine.make_private_with_epsilon(
+            module=model,
+            optimizer=optimizer,
+            data_loader=train_loader,
+            target_epsilon=configs['epsilon'],
+            target_delta=float(configs['delta']),
+            epochs=epochs,
+            max_grad_norm=configs['clip_norm'],
+            #poisson_sampling=False
+        )
+
 
     for epoch_idx in range(epochs):
         start_time = time.time()
@@ -70,7 +92,11 @@ def train(
         # Set model to training mode
         model.train()
 
-        for data, target in train_loader:
+        for batch in train_loader:
+            if len(batch) == 3:  
+                data, target, group = batch
+            elif len(batch) == 2: 
+                data, target = batch
             # Ensure that both data and target are moved to the same device as the model
             data, target = (
                 data.to(device, non_blocking=True),
@@ -84,7 +110,7 @@ def train(
 
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             total_loss += loss.item()
             pred = output.argmax(dim=1)
@@ -93,15 +119,16 @@ def train(
         train_loss = total_loss / len(train_loader)
         train_acc = correct_predictions / len(train_loader.dataset)
 
-        print(
-            f"Epoch [{epoch_idx + 1}/{epochs}] | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}"
-        )
+        if (epoch_idx + 1) % 10 == 0:
+            print(
+                f"Epoch [{epoch_idx + 1}/{epochs}] | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}"
+            )
 
-        if test_loader:
-            test_loss, test_acc = inference(model, test_loader, device)
-            print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+            if test_loader:
+                test_loss, test_acc = inference(model, test_loader, device)
+                print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
-        print(f"Epoch {epoch_idx + 1} took {time.time() - start_time:.2f} seconds")
+            print(f"Epoch {epoch_idx + 1} took {time.time() - start_time:.2f} seconds")
 
     # Move the model back to CPU if needed (this is optional)
     model.to("cpu")
@@ -127,8 +154,11 @@ def inference(
     total_loss, correct_predictions = 0, 0
 
     with torch.no_grad():
-        for data, target in loader:
-            # Ensure data and target are moved to the same device as the model
+        for batch in loader:
+            if len(batch) == 3:  
+                data, target, group = batch
+            elif len(batch) == 2:  
+                data, target = batch
             data, target = data.to(device), target.to(device).long()
 
             output = model(data)

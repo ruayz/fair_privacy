@@ -14,8 +14,10 @@ import torchvision
 from transformers import AutoModelForCausalLM
 
 from dataset.utils import get_dataloader
-from models import AlexNet, CNN, MLP, WideResNet
+from models import AlexNet, CNN, MLP, WideResNet, LR
+from torchvision import models
 from trainers.default_trainer import train, inference
+from trainers import create_trainer
 from trainers.fast_train import (
     load_cifar10_data,
     NetworkEMA,
@@ -27,14 +29,17 @@ from trainers.fast_train import (
 from trainers.train_transformers import *
 
 INPUT_OUTPUT_SHAPE = {
+    "mnist": [1, 10],
     "cifar10": [3, 10],
-    "cifar100": [3, 100],
-    "purchase100": [600, 100],
+    # "cifar100": [3, 100],
+    # "purchase100": [600, 100],
     "texas100": [6169, 100],
+    "utkface": [1, 2],
+    "raceface": [1, 5],
 }
 
 
-def get_model(model_type: str, dataset_name: str):
+def get_model(model_type: str, dataset_name: str, dataset):
     """
     Instantiate and return a model based on the given model type and dataset name.
 
@@ -48,20 +53,31 @@ def get_model(model_type: str, dataset_name: str):
     if model_type == "gpt2":
         return AutoModelForCausalLM.from_pretrained("gpt2")
 
-    num_classes = INPUT_OUTPUT_SHAPE[dataset_name][1]
-    in_shape = INPUT_OUTPUT_SHAPE[dataset_name][0]
-    if model_type == "CNN":
-        return CNN(num_classes=num_classes)
+    if dataset_name == "mnist" or dataset_name == "cifar10" or dataset_name == "utkface" or dataset_name == "raceface":
+        num_classes = INPUT_OUTPUT_SHAPE[dataset_name][1]
+        in_shape = INPUT_OUTPUT_SHAPE[dataset_name][0]
+    else:
+        num_classes = 2
+        in_shape = len(dataset[0][0])
+
+    if model_type == "MLP":  
+        return MLP(in_shape=in_shape, num_classes=num_classes)
+    elif model_type == "resnet":
+        return models.resnet18(num_classes=num_classes)
+    elif model_type == "CNN":
+        return CNN(in_shape=in_shape, num_classes=num_classes)
+    elif model_type == "LR":
+        return LR(in_shape=in_shape, num_classes=num_classes)
     elif model_type == "alexnet":
         return AlexNet(num_classes=num_classes)
+    elif model_type == "wrn16-4":
+        return WideResNet(nin=in_shape, nclass=num_classes, depth=16, width=4)
     elif model_type == "wrn28-1":
         return WideResNet(nin=in_shape, nclass=num_classes, depth=28, width=1)
     elif model_type == "wrn28-2":
         return WideResNet(nin=in_shape, nclass=num_classes, depth=28, width=2)
     elif model_type == "wrn28-10":
         return WideResNet(nin=in_shape, nclass=num_classes, depth=28, width=10)
-    elif model_type == "mlp":  # for purchase dataset
-        return MLP(in_shape=in_shape, num_classes=num_classes)
     elif model_type == "vgg16":
         return torchvision.models.vgg16(pretrained=False)
     else:
@@ -69,7 +85,7 @@ def get_model(model_type: str, dataset_name: str):
 
 
 def load_existing_model(
-    model_metadata: dict, dataset: torchvision.datasets, device: str
+    model_metadata: dict, dataset, device: str
 ):
     """Load an existing model from disk based on the provided metadata.
 
@@ -85,7 +101,7 @@ def load_existing_model(
     dataset_name = model_metadata["dataset"]
 
     if model_name != "speedyresnet":
-        model = get_model(model_name, dataset_name)
+        model = get_model(model_name, dataset_name, dataset)
     else:
         data = load_cifar10_data(dataset, [0], [0], device=device)
         model = NetworkEMA(make_net(data, device=device))
@@ -111,7 +127,7 @@ def load_models(log_dir, dataset, num_models, configs, logger):
 
     Args:
         log_dir (str): Path to the directory containing model logs and metadata.
-        dataset (torchvision.datasets): Dataset object used for model training.
+        dataset (torchvision.datasets or df): Dataset object used for model training.
         num_models (int): Number of models to be loaded from disk.
         configs (dict): Dictionary of configuration settings, including device information.
         logger (logging.Logger): Logger object for logging the model loading process.
@@ -130,18 +146,18 @@ def load_models(log_dir, dataset, num_models, configs, logger):
     else:
         return None, None
 
-    model_list = []
-    for model_idx in range(len(model_metadata_dict)):
-        logger.info(f"Loading model {model_idx}")
-        model_obj = load_existing_model(
-            model_metadata_dict[str(model_idx)],
-            dataset,
-            configs["audit"]["device"],
-        )
-        model_list.append(model_obj)
-        if len(model_list) == num_models:
-            break
-    return model_list, all_memberships
+    # model_list = []
+    # for model_idx in range(len(model_metadata_dict)):
+    #     logger.info(f"Loading model {model_idx}")
+    #     model_obj = load_existing_model(
+    #         model_metadata_dict[str(model_idx)],
+    #         dataset,
+    #         configs["audit"]["device"],
+    #     )
+    #     model_list.append(model_obj)
+    #     if len(model_list) == num_models:
+    #         break
+    return False, all_memberships
 
 
 def train_models(log_dir, dataset, data_split_info, all_memberships, configs, logger):
@@ -150,7 +166,7 @@ def train_models(log_dir, dataset, data_split_info, all_memberships, configs, lo
 
     Args:
         log_dir (str): Path to the directory where models and logs will be saved.
-        dataset (torchvision.datasets): Dataset object used for training the models.
+        dataset (torchvision.datasets or GroupLabelDataset): Dataset object used for training the models.
         data_split_info (list): List of dictionaries containing training and test split information for each model.
         all_memberships (np.array): Membership matrix indicating which samples were used in training each model.
         configs (dict): Configuration dictionary containing training settings.
@@ -169,7 +185,7 @@ def train_models(log_dir, dataset, data_split_info, all_memberships, configs, lo
     return model_list
 
 
-def split_dataset_for_training(dataset_size, num_model_pairs):
+def split_dataset_for_training(dataset_size, num_model_pairs, ratio):
     """
     Split dataset into training and test partitions for model pairs.
 
@@ -183,7 +199,8 @@ def split_dataset_for_training(dataset_size, num_model_pairs):
     """
     data_splits = []
     indices = np.arange(dataset_size)
-    split_index = len(indices) // 2
+    #split_index = len(indices) // 2
+    split_index = int(len(indices) * ratio)
     master_keep = np.full((2 * num_model_pairs, dataset_size), True, dtype=bool)
 
     for i in range(num_model_pairs):
@@ -209,9 +226,36 @@ def split_dataset_for_training(dataset_size, num_model_pairs):
     return data_splits, master_keep
 
 
+def split_one_data_for_training(dataset_size, num_model_pairs, dataset_idx):
+    data_splits = []
+    indices = np.arange(dataset_size)
+    master_keep = np.full((2 * num_model_pairs, dataset_size), True, dtype=bool)
+
+    for i in range(num_model_pairs):
+        master_keep[i * 2, dataset_idx] = False
+        keep = master_keep[i * 2, :]
+        train_indices = np.where(keep)[0]
+        keep = master_keep[i*2+1]
+        test_indices = np.where(keep)[0]
+        data_splits.append(
+            {
+                "train": train_indices,
+                "test": test_indices,
+            }
+        )
+        data_splits.append(
+            {
+                "train": test_indices,
+                "test": train_indices,
+            }
+        )
+
+    return data_splits, master_keep
+
+
 def prepare_models(
     log_dir: str,
-    dataset: torchvision.datasets,
+    dataset,
     data_split_info: list,
     all_memberships: np.array,
     configs: dict,
@@ -222,7 +266,7 @@ def prepare_models(
 
     Args:
         log_dir (str): Path to the directory where model logs and metadata will be saved.
-        dataset (torchvision.datasets): Dataset object used for training.
+        dataset (torchvision.datasets or GroupLabelDataset): Dataset object used for training.
         data_split_info (list): List of dictionaries containing training and test split indices for each model.
         all_memberships (np.array): Membership matrix indicating which samples were used in training each model.
         configs (dict): Configuration dictionary containing training settings.
@@ -261,6 +305,8 @@ def prepare_models(
                 hf_dataset.select(split_info["test"]),
             )
             train_acc, test_acc = None, None
+
+        ##########train here###########
         elif model_name != "speedyresnet":
             train_loader = get_dataloader(
                 torch.utils.data.Subset(dataset, split_info["train"]),
@@ -271,16 +317,31 @@ def prepare_models(
                 torch.utils.data.Subset(dataset, split_info["test"]),
                 batch_size=batch_size,
             )
-            model = train(
-                get_model(model_name, dataset_name),
-                train_loader,
-                configs["train"],
-                test_loader,
-            )
+
+            train_method = configs["train"].get("method", None)
+            if train_method == "regular" or train_method == "dpsgd":
+            # if train_method is None:
+                model = train(
+                    get_model(model_name, dataset_name, dataset),
+                    train_loader,
+                    configs["train"],
+                    test_loader,
+                )
+            else:
+                trainer = create_trainer(
+                    train_loader,
+                    get_model(model_name, dataset_name, dataset),
+                    configs["train"],
+                    log_dir,
+                )
+                model = trainer.train()
+
             test_loss, test_acc = inference(model, test_loader, device)
             train_loss, train_acc = inference(model, train_loader, device)
             logger.info(f"Train accuracy {train_acc}, Train Loss {train_loss}")
             logger.info(f"Test accuracy {test_acc}, Test Loss {test_loss}")
+        ###############################
+
         elif model_name == "speedyresnet" and dataset_name == "cifar10":
             data = load_cifar10_data(
                 dataset,
@@ -310,6 +371,9 @@ def prepare_models(
             )
 
         model_list.append(copy.deepcopy(model))
+        # del model  # 删除模型对象
+        # torch.cuda.empty_cache()  # 清空 GPU 上未使用的内存
+
         logger.info(
             "Training model %s took %s seconds",
             split,
@@ -318,11 +382,12 @@ def prepare_models(
 
         model_idx = split
 
-        with open(f"{log_dir}/model_{model_idx}.pkl", "wb") as f:
-            pickle.dump(model.state_dict(), f)
+        # with open(f"{log_dir}/model_{model_idx}.pkl", "wb") as f:
+        #     pickle.dump(model.state_dict(), f)
 
         model_metadata_dict[model_idx] = {
             "num_train": len(split_info["train"]),
+            "method": configs["train"]["method"],
             "optimizer": configs["train"]["optimizer"],
             "batch_size": batch_size,
             "epochs": configs["train"]["epochs"],
